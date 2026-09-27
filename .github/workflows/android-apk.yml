@@ -42,6 +42,12 @@ jobs:
           unzip -q gradle-8.9-bin.zip
           echo "$PWD/gradle-8.9/bin" >> "$GITHUB_PATH"
 
+      - name: Bundle multilingual local speech model
+        run: |
+          mkdir -p app/src/main/assets/models
+          wget -q --show-progress -O app/src/main/assets/models/ggml-base.bin \
+            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+
       - name: Build debug APK
         run: |
           gradle --no-daemon assembleDebug
