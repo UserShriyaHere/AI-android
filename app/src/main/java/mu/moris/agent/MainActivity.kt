@@ -3,8 +3,6 @@ package mu.moris.agent
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.SpeechRecognizer
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -21,7 +19,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.compose.collectAsStateWithLifecycle\nimport androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import mu.moris.agent.agent.LocalAgentEngine
 import mu.moris.agent.data.AppDatabase
@@ -31,10 +30,11 @@ import mu.moris.agent.security.PermissionEngine
 import mu.moris.agent.voice.LocalWhisperVoiceEngine
 
 class MainActivity : ComponentActivity() {
-    private var speechRecognizer: SpeechRecognizer? = null
+    private lateinit var voiceEngine: LocalWhisperVoiceEngine
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         val dao = AppDatabase.get(this).agentDao()
         val permissionEngine = PermissionEngine()
         val agent = LocalAgentEngine(dao, permissionEngine)
@@ -46,10 +46,11 @@ class MainActivity : ComponentActivity() {
                     dao = dao,
                     agent = agent,
                     permissionEngine = permissionEngine,
-                    voiceAvailable = true,
-                    startVoice = { onText, onError ->
+                    startVoice = { onStarted, onText, onError ->
                         if (!voiceEngine.isRecording()) {
-                            voiceEngine.start().onFailure { onError(it.message ?: "Unable to start microphone.") }
+                            voiceEngine.start()
+                                .onSuccess { onStarted() }
+                                .onFailure { onError(it.message ?: "Unable to start microphone.") }
                         } else {
                             lifecycleScope.launch {
                                 voiceEngine.stopAndTranscribe()
@@ -64,7 +65,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        speechRecognizer?.destroy()
+        if (::voiceEngine.isInitialized) voiceEngine.release()
         super.onDestroy()
     }
 }
@@ -79,19 +80,16 @@ private fun MorisAgentApp(
     dao: mu.moris.agent.data.AgentDao,
     agent: LocalAgentEngine,
     permissionEngine: PermissionEngine,
-    voiceAvailable: Boolean,
-    startVoice: ((String) -> Unit, (String) -> Unit) -> Unit
+    startVoice: (() -> Unit, (String) -> Unit, (String) -> Unit) -> Unit
 ) {
     var tab by remember { mutableStateOf(HomeTab.AGENT) }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Moris Agent") },
                 actions = {
-                    AssistChip(
-                        onClick = {},
-                        label = { Text("🔒 LOCAL") }
-                    )
+                    AssistChip(onClick = {}, label = { Text("🔒 LOCAL") })
                     Spacer(Modifier.width(8.dp))
                 }
             )
@@ -122,7 +120,7 @@ private fun MorisAgentApp(
     ) { padding ->
         Box(Modifier.padding(padding)) {
             when (tab) {
-                HomeTab.AGENT -> AgentScreen(agent, voiceAvailable, startVoice)
+                HomeTab.AGENT -> AgentScreen(agent, startVoice)
                 HomeTab.NOTES -> NotesScreen(dao)
                 HomeTab.TASKS -> TasksScreen(dao)
                 HomeTab.EXPENSES -> ExpensesScreen(dao)
@@ -135,12 +133,13 @@ private fun MorisAgentApp(
 @Composable
 private fun AgentScreen(
     agent: LocalAgentEngine,
-    voiceAvailable: Boolean,
-    startVoice: ((String) -> Unit, (String) -> Unit) -> Unit
+    startVoice: (() -> Unit, (String) -> Unit, (String) -> Unit) -> Unit
 ) {
     var input by remember { mutableStateOf("") }
     var reply by remember { mutableStateOf("Bonzur 👋 Mo Moris Agent. Your personal data stays on this phone.") }
     var listening by remember { mutableStateOf(false) }
+    var transcribing by remember { mutableStateOf(false) }
+
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -153,56 +152,113 @@ private fun AgentScreen(
         }
     }
 
-    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) {
-            listening = true
+    fun toggleVoice() {
+        if (!listening) {
             startVoice(
-                { spoken -> listening = false; input = spoken; submit(spoken) },
-                { error -> listening = false; reply = error }
+                {
+                    listening = true
+                    transcribing = false
+                    reply = "Listening locally… Tap the microphone again when you finish."
+                },
+                { spoken ->
+                    listening = false
+                    transcribing = false
+                    input = spoken
+                    reply = "Heard: “$spoken”"
+                    submit(spoken)
+                },
+                { error ->
+                    listening = false
+                    transcribing = false
+                    reply = error
+                }
             )
-        } else reply = "Microphone permission was not granted."
+        } else {
+            transcribing = true
+            reply = "Transcribing locally…"
+            startVoice(
+                {},
+                { spoken ->
+                    listening = false
+                    transcribing = false
+                    input = spoken
+                    reply = "Heard: “$spoken”"
+                    submit(spoken)
+                },
+                { error ->
+                    listening = false
+                    transcribing = false
+                    reply = error
+                }
+            )
+        }
     }
 
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) toggleVoice()
+        else reply = "Microphone permission was not granted."
+    }
+
+    Column(
+        Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
         Card {
             Column(Modifier.padding(16.dp)) {
                 Text("Private by design", style = MaterialTheme.typography.titleMedium)
-                Text("No INTERNET permission. Notes, expenses, tasks and commands are processed locally.")
+                Text("Voice, notes, expenses, tasks and commands are processed locally. The app has no INTERNET permission.")
             }
         }
 
         Card(Modifier.fillMaxWidth()) {
-            Text(reply, Modifier.padding(16.dp))
+            Column(Modifier.padding(16.dp)) {
+                Text(reply)
+                if (listening || transcribing) {
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+            }
         }
 
         OutlinedTextField(
             value = input,
             onValueChange = { input = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Ask in English, Français or Kreol Morisien") },
+            label = { Text("English, Français or Kreol Morisien") },
             minLines = 2,
             trailingIcon = {
-                IconButton(onClick = {
-                    if (!voiceAvailable) {
-                        reply = "Local voice engine is unavailable in this build."
-                    } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                        listening = true
-                        startVoice(
-                            { spoken -> listening = false; input = spoken; submit(spoken) },
-                            { error -> listening = false; reply = error }
-                        )
-                    } else micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                }) {
-                    Icon(if (listening) Icons.Default.GraphicEq else Icons.Default.Mic, contentDescription = "Voice")
+                IconButton(
+                    enabled = !transcribing,
+                    onClick = {
+                        if (ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            toggleVoice()
+                        } else {
+                            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    }
+                ) {
+                    Icon(
+                        if (listening) Icons.Default.StopCircle else Icons.Default.Mic,
+                        contentDescription = if (listening) "Stop and transcribe" else "Speak"
+                    )
                 }
             }
         )
 
-        Button(onClick = { submit(input) }, modifier = Modifier.fillMaxWidth()) {
+        Button(
+            onClick = { submit(input) },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = input.isNotBlank() && !transcribing
+        ) {
             Text("Run locally")
         }
 
-        Text("Try:", style = MaterialTheme.typography.titleSmall)
+        Text("Voice: tap 🎤 → speak → tap stop.", style = MaterialTheme.typography.titleSmall)
+        Text("Try:")
         Text("• Mo finn depans 450 roupi lor lunch\n• Create a note about AWS\n• Add task finish report\n• Ki to kapav fer?")
     }
 }
@@ -212,7 +268,7 @@ private fun NotesScreen(dao: mu.moris.agent.data.AgentDao) {
     val notes by dao.notes().collectAsStateWithLifecycle(initialValue = emptyList())
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Notes", style = MaterialTheme.typography.headlineSmall)
-        Text("Create notes from the Agent tab. Stored only in the local Room database.")
+        Text("Stored only in the local Room database.")
         Spacer(Modifier.height(12.dp))
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(notes) { note ->
@@ -231,6 +287,7 @@ private fun NotesScreen(dao: mu.moris.agent.data.AgentDao) {
 private fun TasksScreen(dao: mu.moris.agent.data.AgentDao) {
     val tasks by dao.tasks().collectAsStateWithLifecycle(initialValue = emptyList())
     val scope = rememberCoroutineScope()
+
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Tasks", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(12.dp))
@@ -242,9 +299,12 @@ private fun TasksScreen(dao: mu.moris.agent.data.AgentDao) {
                     }
                 ) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = task.completed, onCheckedChange = {
-                            scope.launch { dao.setTaskCompleted(task.id, it) }
-                        })
+                        Checkbox(
+                            checked = task.completed,
+                            onCheckedChange = {
+                                scope.launch { dao.setTaskCompleted(task.id, it) }
+                            }
+                        )
                         Text(task.title)
                     }
                 }
@@ -257,15 +317,20 @@ private fun TasksScreen(dao: mu.moris.agent.data.AgentDao) {
 private fun ExpensesScreen(dao: mu.moris.agent.data.AgentDao) {
     val expenses by dao.expenses().collectAsStateWithLifecycle(initialValue = emptyList())
     val total by dao.totalExpenses().collectAsStateWithLifecycle(initialValue = 0.0)
+
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Expenses", style = MaterialTheme.typography.headlineSmall)
         Text("Total: Rs " + String.format("%.2f", total), style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(12.dp))
+
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(expenses) { expense ->
                 Card(Modifier.fillMaxWidth()) {
-                    Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Column {
+                    Row(
+                        Modifier.fillMaxWidth().padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(Modifier.weight(1f)) {
                             Text(expense.category, style = MaterialTheme.typography.titleMedium)
                             Text(expense.description, maxLines = 2)
                         }
@@ -298,13 +363,17 @@ private fun PrivacyScreen(permissionEngine: PermissionEngine) {
                         refresh++
                     }
                 ) {
-                    Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
                         Text(capability.name.replace("_", " "))
                         Text(mode.name)
                     }
                 }
             }
         }
+
         @Suppress("UNUSED_EXPRESSION")
         refresh
     }
