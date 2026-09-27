@@ -21,14 +21,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle\nimport androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import mu.moris.agent.agent.LocalAgentEngine
 import mu.moris.agent.data.AppDatabase
 import mu.moris.agent.security.AccessMode
 import mu.moris.agent.security.AgentCapability
 import mu.moris.agent.security.PermissionEngine
-import mu.moris.agent.voice.OnDeviceVoiceRecognizer
+import mu.moris.agent.voice.LocalWhisperVoiceEngine
 
 class MainActivity : ComponentActivity() {
     private var speechRecognizer: SpeechRecognizer? = null
@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
         val dao = AppDatabase.get(this).agentDao()
         val permissionEngine = PermissionEngine()
         val agent = LocalAgentEngine(dao, permissionEngine)
-        val voice = OnDeviceVoiceRecognizer(this)
+        voiceEngine = LocalWhisperVoiceEngine(this)
 
         setContent {
             MaterialTheme {
@@ -46,29 +46,16 @@ class MainActivity : ComponentActivity() {
                     dao = dao,
                     agent = agent,
                     permissionEngine = permissionEngine,
-                    voiceAvailable = voice.available(),
+                    voiceAvailable = true,
                     startVoice = { onText, onError ->
-                        val recognizer = voice.create()
-                        if (recognizer == null) {
-                            onError("On-device speech recognition is not available on this phone.")
+                        if (!voiceEngine.isRecording()) {
+                            voiceEngine.start().onFailure { onError(it.message ?: "Unable to start microphone.") }
                         } else {
-                            speechRecognizer?.destroy()
-                            speechRecognizer = recognizer
-                            recognizer.setRecognitionListener(object : RecognitionListener {
-                                override fun onReadyForSpeech(params: Bundle?) {}
-                                override fun onBeginningOfSpeech() {}
-                                override fun onRmsChanged(rmsdB: Float) {}
-                                override fun onBufferReceived(buffer: ByteArray?) {}
-                                override fun onEndOfSpeech() {}
-                                override fun onError(error: Int) = onError("Voice recognition error: " + error)
-                                override fun onResults(results: Bundle?) {
-                                    val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                                    matches?.firstOrNull()?.let(onText)
-                                }
-                                override fun onPartialResults(partialResults: Bundle?) {}
-                                override fun onEvent(eventType: Int, params: Bundle?) {}
-                            })
-                            recognizer.startListening(voice.intent())
+                            lifecycleScope.launch {
+                                voiceEngine.stopAndTranscribe()
+                                    .onSuccess(onText)
+                                    .onFailure { onError(it.message ?: "Unable to transcribe voice locally.") }
+                            }
                         }
                     }
                 )
@@ -197,7 +184,7 @@ private fun AgentScreen(
             trailingIcon = {
                 IconButton(onClick = {
                     if (!voiceAvailable) {
-                        reply = "This phone does not expose Android on-device speech recognition. Text commands still work privately."
+                        reply = "Local voice engine is unavailable in this build."
                     } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                         listening = true
                         startVoice(
