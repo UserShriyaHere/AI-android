@@ -2,7 +2,8 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -12,7 +13,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
@@ -29,10 +29,12 @@ jobs:
           java-version: "17"
 
       - name: Accept Android SDK licenses
-        run: yes | "$SDKMANAGER" --licenses > /dev/null || true
+        run: |
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
 
       - name: Install Android SDK 35
-        run: "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+        run: |
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Install Gradle 8.9
         run: |
@@ -41,7 +43,8 @@ jobs:
           echo "$PWD/gradle-8.9/bin" >> "$GITHUB_PATH"
 
       - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+        run: |
+          gradle --no-daemon assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
