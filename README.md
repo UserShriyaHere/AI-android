@@ -41,9 +41,11 @@ Download the artifact ZIP, extract `app-debug.apk`, and install it on Android.
 
 ## Updating
 
-Push another code update to `main`; GitHub Actions builds another APK. Installing a newer APK with the same application ID/signature updates the existing app and preserves its Room database.
+Push another code update to `main`; GitHub Actions builds another APK automatically.
 
-The current CI build uses Android's debug signing key and is intended for direct personal/testing installation. A persistent private release signing key can be added later for long-term release distribution.
+**Important:** Android only allows an APK to update an installed copy when both APKs use the same signing key. The current CI build uses an ephemeral debug key on GitHub-hosted runners, so this first APK is suitable for testing but is **not yet guaranteed to update in place** on later builds.
+
+For permanent in-place updates without losing local data, configure one persistent private signing keystore in GitHub Actions secrets and use it for every release build. Do not commit a private signing key to this public repository.
 
 ## Architecture
 
